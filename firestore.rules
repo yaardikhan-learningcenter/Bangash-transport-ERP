@@ -1,0 +1,62 @@
+rules_version = '2';
+// Bangash Transport ERP - Firestore security rules.
+// Publish: Firebase Console > Firestore Database > Rules > paste this file > Publish
+// (or `firebase deploy --only firestore:rules`).
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function roleRef() { return /databases/$(database)/documents/erp_roles/$(request.auth.uid); }
+    function statusRef() { return /databases/$(database)/documents/erp_public/status; }
+    function hasRole() { return signedIn() && exists(roleRef()); }
+    function isActive() { return hasRole() && get(roleRef()).data.status == 'Active'; }
+    function isAdmin() { return isActive() && get(roleRef()).data.role == 'Admin'; }
+    function setupOpen() { return !exists(statusRef()); }
+
+    // Exists only after the first administrator has been created (login screen reads it).
+    match /erp_public/{doc} {
+      allow get: if true;
+      allow create: if doc == 'status' && signedIn() && setupOpen()
+                    && getAfter(roleRef()).data.role == 'Admin';
+      allow update, delete: if false;
+    }
+
+    // username -> sign-in email. Readable per username by the login screen (cannot be listed).
+    match /erp_login/{username} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if isAdmin()
+                    || (signedIn() && setupOpen() && request.resource.data.uid == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+
+    // auth uid -> role. This is what every other rule checks. Only admins can change it.
+    match /erp_roles/{uid} {
+      allow get: if signedIn() && (request.auth.uid == uid || isAdmin());
+      allow list: if isAdmin();
+      allow create: if isAdmin()
+                    || (signedIn() && request.auth.uid == uid && setupOpen()
+                        && request.resource.data.role == 'Admin'
+                        && request.resource.data.status == 'Active');
+      allow update, delete: if isAdmin();
+    }
+
+    // Staff profiles and company settings: everyone signed in can read, only Admin can change.
+    match /erp_users/{id} {
+      allow read: if isActive();
+      allow write: if isAdmin();
+    }
+    match /erp_settings/{doc} {
+      allow read: if isActive();
+      allow write: if isAdmin();
+    }
+
+    // Business data: any active staff member can read and edit (same as the original app).
+    match /{col}/{id} {
+      allow read, write: if isActive() && col in [
+        'erp_trips', 'erp_vehicles', 'erp_customers', 'erp_drivers', 'erp_expenseCategories',
+        'erp_expenseVouchers', 'erp_invoices', 'erp_pods', 'erp_accounts', 'erp_transactions',
+        'erp_suppliers', 'erp_purchases', 'erp_auditLogs'
+      ];
+    }
+  }
+}
